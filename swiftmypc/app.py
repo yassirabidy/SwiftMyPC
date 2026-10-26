@@ -8,11 +8,12 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 
 import psutil
 
-from . import __version__, cleaner, optimizer, services, startup
+from . import __version__, cleaner, installer, optimizer, services, startup, updater
 from .charts import HistoryChart
 from .monitor import ProcessSampler, end_processes, fmt_bytes, system_stats
 from .settings import Settings, set_start_with_windows, starts_with_windows
@@ -34,6 +35,8 @@ REFRESH_MS = 2000
 HISTORY_SECONDS = 600
 AUTO_FIRST_MS = 5 * 60 * 1000     # first automatic optimize check after start
 AUTO_CHECK_MS = 30 * 60 * 1000    # then every 30 minutes (runs at most once a day)
+UPDATE_FIRST_MS = int(os.environ.get("SWIFTMYPC_UPDATE_FIRST_MS", 60 * 1000))  # env: tests only
+UPDATE_CHECK_MS = 6 * 3600 * 1000  # look for a new version every 6 hours
 
 
 def resource_path(*parts: str) -> str:
@@ -43,14 +46,18 @@ def resource_path(*parts: str) -> str:
 
 
 class SingleInstance:
-    """Only one SwiftMyPC at a time; starting a second one shows the first."""
+    """Only one SwiftMyPC at a time; starting a second one shows the first.
+    The installer/uninstaller can also ask the running copy to quit."""
 
-    MUTEX, EVENT = "Local\\SwiftMyPC.Instance", "Local\\SwiftMyPC.Show"
+    _S = installer.SANDBOX_SUFFIX
+    MUTEX, EVENT = f"Local\\SwiftMyPC{_S}.Instance", f"Local\\SwiftMyPC{_S}.Show"
+    QUIT_EVENT = f"Local\\SwiftMyPC{_S}.Quit"
 
     def __init__(self):
         k = self.kernel32 = ctypes.windll.kernel32
-        k.CreateMutexW.restype = k.CreateEventW.restype = k.OpenEventW.restype = ctypes.c_void_p
-        self.mutex = self.event = None
+        k.CreateMutexW.restype = k.CreateEventW.restype = ctypes.c_void_p
+        k.OpenEventW.restype = k.OpenMutexW.restype = ctypes.c_void_p
+        self.mutex = self.event = self.quit_event = None
 
     def acquire(self) -> bool:
         k = self.kernel32
@@ -60,7 +67,34 @@ class SingleInstance:
             self.mutex = None
             return False
         self.event = k.CreateEventW(None, False, False, self.EVENT)
+        self.quit_event = k.CreateEventW(None, False, False, self.QUIT_EVENT)
         return True
+
+    def other_running(self) -> bool:
+        h = self.kernel32.OpenMutexW(0x00100000, False, self.MUTEX)  # SYNCHRONIZE
+        if h:
+            self.kernel32.CloseHandle(ctypes.c_void_p(h))
+            return True
+        return self.kernel32.GetLastError() == 5  # exists, but owned by an elevated copy
+
+    def ask_other_to_quit(self, timeout: float = 30.0) -> bool:
+        """Ask the running copy to quit and wait until it has. False if it didn't."""
+        ev = self.kernel32.OpenEventW(0x0002, False, self.QUIT_EVENT)
+        if not ev:
+            return not self.other_running()
+        self.kernel32.SetEvent(ctypes.c_void_p(ev))
+        self.kernel32.CloseHandle(ctypes.c_void_p(ev))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self.other_running():
+                time.sleep(1.5)  # let the process finish exiting so its .exe is unlocked
+                return True
+            time.sleep(0.2)
+        return False
+
+    def quit_requested(self) -> bool:
+        return bool(self.quit_event) and self.kernel32.WaitForSingleObject(
+            ctypes.c_void_p(self.quit_event), 0) == 0
 
     def signal_existing(self) -> bool:
         ev = self.kernel32.OpenEventW(0x0002, False, self.EVENT)  # EVENT_MODIFY_STATE
@@ -74,14 +108,15 @@ class SingleInstance:
         return bool(self.event) and self.kernel32.WaitForSingleObject(ctypes.c_void_p(self.event), 0) == 0
 
     def release(self):
-        for h in (self.mutex, self.event):
+        for h in (self.mutex, self.event, self.quit_event):
             if h:
                 self.kernel32.CloseHandle(ctypes.c_void_p(h))
-        self.mutex = self.event = None
+        self.mutex = self.event = self.quit_event = None
 
 
 class App(tk.Tk):
-    def __init__(self, start_hidden: bool = False, instance: SingleInstance | None = None):
+    def __init__(self, start_hidden: bool = False, instance: SingleInstance | None = None,
+                 notice: str | None = None, cleanup_path: str | None = None):
         super().__init__()
         self.title("SwiftMyPC")
         self.geometry("1100x820")
@@ -101,6 +136,8 @@ class App(tk.Tk):
         self._optimizer_win = None
         self._optimizing = False
         self._last_cpu = None
+        self.update_info: updater.Update | None = None
+        self._updating = False
         self.tray = None
         try:
             self.tray = Tray(self, resource_path("assets", "icon.png"))
@@ -110,8 +147,9 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build_style()
         self._build_header()
+        self._build_update_banner()
 
-        nb = ttk.Notebook(self)
+        nb = self.notebook = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.monitor_tab = MonitorTab(nb, self)
         self.startup_tab = StartupTab(nb, self)
@@ -124,6 +162,118 @@ class App(tk.Tk):
 
         self.after(100, self._drain)
         self.after(AUTO_FIRST_MS, self._auto_optimize_tick)
+        self.after(UPDATE_FIRST_MS, self._update_tick)
+        self.after(1500, lambda: self._after_start(notice, cleanup_path))
+
+    def _after_start(self, notice, cleanup_path):
+        if installer.running_installed():
+            try:
+                installer.register(__version__)  # keep Settings > Apps showing the right version
+            except OSError:
+                pass
+        if notice == "updated":
+            self.run_bg(updater.cleanup_after_update)
+            self._notify("SwiftMyPC updated", f"You're now on version {__version__}.")
+        elif notice == "installed":
+            self._notify("SwiftMyPC is installed",
+                         "Open it any time from the Desktop or Start menu shortcut. It updates itself.")
+        if cleanup_path:
+            self.run_bg(lambda: _delete_download(cleanup_path))
+
+    def _notify(self, title, message):
+        if self.tray:
+            self.tray.notify(title, message)
+
+    # --- updates -----------------------------------------------------------------
+
+    def _build_update_banner(self):
+        self.banner = tk.Frame(self, bg="#1f3355", padx=14, pady=8)
+        self.banner_text = tk.Label(self.banner, text="", bg="#1f3355", fg=TEXT, font=(FONT, 10, "bold"))
+        self.banner_text.pack(side="left")
+        self.banner_btn = ttk.Button(self.banner, text="Update now", style="Accent.TButton",
+                                     command=lambda: self.install_update(silent=False))
+        self.banner_btn.pack(side="right")
+        ttk.Button(self.banner, text="What's new",
+                   command=lambda: webbrowser.open(updater.RELEASES_PAGE)).pack(side="right", padx=8)
+
+    def _show_banner(self, text):
+        self.banner_text.config(text=text)
+        if not self.banner.winfo_ismapped():
+            self.banner.pack(fill="x", padx=16, pady=(0, 10), before=self.notebook)
+
+    def _update_tick(self):
+        self.after(UPDATE_CHECK_MS, self._update_tick)
+        if installer.is_frozen() and not self._updating:
+            self.run_bg(updater.check, self._on_update_found)
+
+    def _on_update_found(self, update, err):
+        if err or not update or self._updating:
+            return
+        self.update_info = update
+        self._show_banner(f"✨  SwiftMyPC {update.version} is available (you have {__version__}).")
+        s = self.settings
+        if s["auto_update"] and updater.can_self_update() and self.state() == "withdrawn":
+            self.install_update(silent=True)  # nobody is looking: update quietly and come back to the tray
+            return
+        if s["notified_version"] != update.version:
+            self._notify(f"SwiftMyPC {update.version} is available", "Open SwiftMyPC and click Update now.")
+            s.set("notified_version", update.version)
+
+    def check_updates_now(self):
+        if not installer.is_frozen():
+            messagebox.showinfo("Updates", "You're running SwiftMyPC from source code. "
+                                "Update it with 'git pull'.", parent=self)
+            return
+
+        def done(update, err):
+            if err:
+                messagebox.showerror("Updates", f"Couldn't check for updates:\n{err}", parent=self)
+            elif not update:
+                messagebox.showinfo("Updates", f"You're up to date (version {__version__}).", parent=self)
+            else:
+                self._on_update_found(update, None)
+        self.run_bg(updater.check, done)
+
+    def install_update(self, silent: bool):
+        u = self.update_info
+        if not u or self._updating:
+            return
+        if not updater.can_self_update():
+            # Not the installed copy (e.g. run straight from Downloads): get the new one by hand.
+            webbrowser.open(updater.RELEASES_PAGE)
+            return
+        self._updating = True
+        self.banner_btn.state(["disabled"])
+        last = [-1]
+
+        def progress(done, total):
+            pct = done * 100 // total if total else 0
+            if pct != last[0]:
+                last[0] = pct
+                self.call_soon(lambda: self.banner_text.config(
+                    text=f"Downloading SwiftMyPC {u.version}… {pct}%"))
+
+        def work():
+            updater.apply(updater.download(u, progress), u.version)
+
+        def done(_, err):
+            if err:
+                self._updating = False
+                self.banner_btn.state(["!disabled"])
+                self.banner_text.config(text=f"Update failed: {err}")
+                return
+            self.restart_into(["--updated"] + (["--tray"] if silent else []))
+        self.run_bg(work, done)
+
+    def restart_into(self, args):
+        """Start the installed copy with args and quit this one."""
+        if self.tray:
+            self.tray.stop()
+        if self.instance:
+            self.instance.release()  # the new copy must be able to take over
+            self.instance = None
+        installer.launch_installed(*args)
+        self.destroy()
 
     # --- window / tray -----------------------------------------------------------
 
@@ -154,6 +304,11 @@ class App(tk.Tk):
         if self.instance:
             self.instance.release()
         self.destroy()
+
+    def destroy(self):
+        for timer in self.tk.call("after", "info"):  # stop pending timers firing after close
+            self.after_cancel(timer)
+        super().destroy()
 
     def set_alerts(self, enabled: bool):
         self.settings.set("alerts", enabled)
@@ -230,6 +385,9 @@ class App(tk.Tk):
             pass
         if self.instance and self.instance.show_requested():
             self.show_window()
+        if self.instance and self.instance.quit_requested():
+            self.quit_app()  # the installer is replacing or removing this copy
+            return
         self.after(100, self._drain)
 
     # --- layout ------------------------------------------------------------------
@@ -330,6 +488,11 @@ class App(tk.Tk):
                              variable=auto_var,
                              command=lambda: self.settings.set("auto_optimize", auto_var.get()))
         menu.add_separator()
+        update_var = tk.BooleanVar(value=self.settings["auto_update"])
+        menu.add_checkbutton(label="Install updates automatically", variable=update_var,
+                             command=lambda: self.settings.set("auto_update", update_var.get()))
+        menu.add_command(label="Check for updates now", command=self.check_updates_now)
+        menu.add_separator()
         menu.add_command(label="Quit SwiftMyPC", command=self.quit_app)
         btn["menu"] = menu
         menu.bind("<Map>", lambda _: (tray_var.set(self.settings["close_to_tray"]),
@@ -345,6 +508,7 @@ class App(tk.Tk):
             cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if self.instance:
             self.instance.release()  # let the elevated copy become the running instance
+        os.environ.update(installer.fresh_env())  # ShellExecute passes our environment on
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, cwd, 1)
         if rc > 32:
             self.instance = None
@@ -669,8 +833,10 @@ class MonitorTab(ttk.Frame):
                         command=self._regroup).pack(side="left")
         ttk.Button(bar, text="End task", style="Danger.TButton",
                    command=self.end_task).pack(side="right")
-        ttk.Label(bar, text="Orange = heavy. Select a row and End task to free its CPU and memory.  ",
-                  style="Muted.TLabel").pack(side="right")
+        self.unneeded_btn = ttk.Button(bar, text="🧹 End unnecessary tasks", style="Accent.TButton",
+                                       command=self.end_unnecessary)
+        self.unneeded_btn.pack(side="right", padx=8)
+        ttk.Label(bar, text="Orange = heavy.  ", style="Muted.TLabel").pack(side="right")
 
         frame = ttk.Frame(self)
         frame.pack(fill="both", expand=True)
@@ -765,6 +931,38 @@ class MonitorTab(ttk.Frame):
                 self.tree.move(a.key, "", i)
             else:
                 self.tree.insert("", i, iid=a.key, values=values, tags=tags)
+
+    def end_unnecessary(self):
+        """One click: close every known background helper that has no window (and, as admin,
+        stop running updater/telemetry services). Nothing you have open is touched."""
+        admin = self.app.admin
+        self.unneeded_btn.state(["disabled"])
+        self.unneeded_btn.config(text="🧹 Working…")
+
+        def work():
+            actions = optimizer.plan_unnecessary(admin)
+            optimizer.run(actions)
+            return actions
+
+        def done(actions, err):
+            self.unneeded_btn.state(["!disabled"])
+            self.unneeded_btn.config(text="🧹 End unnecessary tasks")
+            tip = ("" if admin else "\n\nTip: click 'Restart as admin' to also stop background updater "
+                                    "services (Adobe, Google, Edge…).")
+            if err:
+                messagebox.showerror("End unnecessary tasks", str(err), parent=self)
+            elif not actions:
+                messagebox.showinfo("End unnecessary tasks",
+                                    "Nothing unnecessary is running right now. Your PC is already lean." + tip,
+                                    parent=self)
+            else:
+                freed = sum(a.size for a in actions)
+                lines = "\n".join(f"•  {a.label}: {a.result}\n    {a.detail}" for a in actions)
+                messagebox.showinfo("End unnecessary tasks",
+                                    f"Done! Freed about {fmt_bytes(freed)} of memory.\n\n{lines}\n\n"
+                                    "These restart by themselves when they're needed. Apps you have open "
+                                    "and Windows itself were not touched." + tip, parent=self)
+        self.app.run_bg(work, done)
 
     def end_task(self):
         sel = self.tree.selection()
@@ -1134,6 +1332,145 @@ class CleanerTab(ttk.Frame):
         self.app.run_bg(clean_all, done)
 
 
+# --- install / uninstall (packaged .exe only) ----------------------------------------
+
+MB_OK, MB_YESNO, MB_ICONINFO, MB_ICONWARN, MB_ICONQUESTION, IDYES = 0, 4, 0x40, 0x30, 0x20, 6
+
+
+def _message(text, flags=MB_ICONINFO, title="SwiftMyPC") -> int:
+    return ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+
+
+def _arg_value(args, name):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
+
+
+def _delete_download(path: str) -> None:
+    """Remove the downloaded installer the user ran, once that process has exited."""
+    name = os.path.basename(path).lower()
+    if (not name.startswith("swiftmypc") or not name.endswith(".exe")
+            or installer._same(path, installer.installed_exe())):
+        return  # only ever our own downloaded .exe
+    for _ in range(20):
+        try:
+            os.remove(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(0.5)
+
+
+class InstallDialog(tk.Tk):
+    """Shown when a downloaded SwiftMyPC.exe is opened: install it, or just run it once."""
+
+    def __init__(self, installed: str | None):
+        super().__init__()
+        self.choice = None
+        self.title("SwiftMyPC")
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        try:
+            self.iconbitmap(default=resource_path("assets", "icon.ico"))
+        except tk.TclError:
+            pass
+        ver = updater._version_tuple
+        if installed is None:
+            title, body, primary = ("Install SwiftMyPC?",
+                                    "SwiftMyPC will be installed for your account (no admin needed):\n\n"
+                                    "•  Shortcuts on your Desktop and in the Start menu\n"
+                                    "•  Updates itself when a new version comes out\n"
+                                    "•  Remove it any time from Settings › Apps", "Install")
+        elif installed == "unknown" or ver(installed) < ver(__version__):
+            title, body, primary = (f"Update SwiftMyPC to {__version__}?",
+                                    f"You have version {installed} installed. This replaces it, so only "
+                                    "one copy stays on your PC. Your settings are kept.", "Update")
+        else:
+            title, body, primary = (f"SwiftMyPC {installed} is already installed",
+                                    "Open the installed copy, or reinstall this version over it.", "Open SwiftMyPC")
+        self.mode = "open" if primary == "Open SwiftMyPC" else "install"
+
+        tk.Label(self, text=title, bg=BG, fg=TEXT, font=(FONT, 16, "bold")).pack(anchor="w", padx=24, pady=(20, 8))
+        tk.Label(self, text=body, bg=BG, fg=MUTED, font=(FONT, 10), justify="left", wraplength=440).pack(
+            anchor="w", padx=24)
+        self.delete_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(self, text="Delete this downloaded file afterwards", variable=self.delete_var,
+                       bg=BG, fg=TEXT, selectcolor=PANEL, activebackground=BG, activeforeground=TEXT,
+                       font=(FONT, 10)).pack(anchor="w", padx=20, pady=(14, 0))
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=24, pady=20)
+        tk.Button(row, text=primary, command=lambda: self._pick(self.mode), bg=ACCENT, fg="white",
+                  activebackground="#3a76e6", activeforeground="white", relief="flat",
+                  font=(FONT, 10, "bold"), padx=16, pady=6).pack(side="right")
+        if self.mode == "open":
+            tk.Button(row, text="Reinstall", command=lambda: self._pick("install"), bg=PANEL_HI, fg=TEXT,
+                      relief="flat", font=(FONT, 10), padx=14, pady=6).pack(side="right", padx=8)
+        tk.Button(row, text="Just run it once", command=lambda: self._pick("run"), bg=PANEL_HI, fg=TEXT,
+                  relief="flat", font=(FONT, 10), padx=14, pady=6).pack(side="left")
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _pick(self, choice):
+        self.choice = choice
+        self.destroy()
+
+
+def install_flow(silent: bool = False) -> bool:
+    """Returns True when this process should exit (installed copy launched, or cancelled).
+    silent: install without asking (SwiftMyPC.exe --install)."""
+    if silent:
+        choice, delete = "install", False
+    else:
+        dlg = InstallDialog(installer.installed_version())
+        dlg.mainloop()
+        choice, delete = dlg.choice, dlg.delete_var.get()
+    if choice is None:
+        return True
+    if choice == "run":
+        return False
+    if choice == "open":
+        installer.launch_installed()
+        return True
+    inst = SingleInstance()
+    if inst.other_running() and not inst.ask_other_to_quit():
+        _message("SwiftMyPC is still running. Quit it from its tray icon (right-click › Quit), "
+                 "then open this file again.", MB_ICONWARN)
+        return True
+    last_error = None
+    for _ in range(20):  # the old copy (or an antivirus scan) may hold the file for a moment
+        try:
+            installer.install(sys.executable, __version__)
+            break
+        except OSError as e:
+            last_error = e
+            time.sleep(1)
+    else:
+        hint = ("\n\nWindows (or your antivirus) is still busy with the previous copy. "
+                "Wait a minute and open this file again." if isinstance(last_error, PermissionError) else "")
+        _message(f"Installation failed:\n{last_error}{hint}", MB_ICONWARN)
+        return True
+    args = ["--installed"] + (["--cleanup", sys.executable] if delete else [])
+    installer.launch_installed(*args)
+    return True
+
+
+def uninstall_flow(quiet: bool = False) -> None:
+    if not quiet and _message(
+            "Remove SwiftMyPC from this PC?\n\nThings it already cleaned stay cleaned. Service and "
+            "startup changes stay as they are; restore them in the app first if you want them back.",
+            MB_YESNO | MB_ICONQUESTION, "Uninstall SwiftMyPC") != IDYES:
+        return
+    inst = SingleInstance()
+    if inst.other_running() and not inst.ask_other_to_quit():
+        if not quiet:
+            _message("Couldn't close the running SwiftMyPC. Quit it from its tray icon and try again.",
+                     MB_ICONWARN)
+        return
+    installer.uninstall()
+    if not quiet:
+        _message("SwiftMyPC was removed.", MB_ICONINFO, "Uninstall SwiftMyPC")
+    installer.schedule_folder_removal()  # deletes the folder (and this .exe) after we exit
+
+
 def main():
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -1141,10 +1478,18 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SwiftMyPC")
     except Exception:
         pass
+    args = sys.argv[1:]
+    if "--uninstall" in args:
+        uninstall_flow(quiet="--quiet" in args)
+        return
+    if installer.is_frozen() and not installer.running_installed() and "--portable" not in args:
+        if install_flow(silent="--install" in args):
+            return
     instance = SingleInstance()
     if not instance.acquire():
         if not instance.signal_existing():
-            ctypes.windll.user32.MessageBoxW(None, "SwiftMyPC is already running. Look for its icon "
-                                             "in the system tray.", "SwiftMyPC", 0x40)
+            _message("SwiftMyPC is already running. Look for its icon in the system tray.")
         return
-    App(start_hidden="--tray" in sys.argv, instance=instance).mainloop()
+    notice = "updated" if "--updated" in args else "installed" if "--installed" in args else None
+    App(start_hidden="--tray" in args, instance=instance, notice=notice,
+        cleanup_path=_arg_value(args, "--cleanup")).mainloop()

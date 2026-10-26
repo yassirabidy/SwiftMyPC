@@ -11,6 +11,8 @@ DEFAULTS = {
     "tray_hint_shown": False,
     "auto_optimize": True,    # daily Smart Optimize of junk files + background helpers
     "last_auto_optimize": 0,
+    "auto_update": True,      # install new versions by itself while running in the tray
+    "notified_version": "",   # last update version we already told the user about
 }
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -44,7 +46,9 @@ class Settings(dict):
 def launch_command() -> str:
     """Command that starts SwiftMyPC minimised to the tray."""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}" --tray'
+        from .installer import installed_exe
+        exe = installed_exe() if os.path.isfile(installed_exe()) else sys.executable
+        return f'"{exe}" --tray'
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     launcher = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "launcher.py")
     return f'"{pythonw}" "{launcher}" --tray'

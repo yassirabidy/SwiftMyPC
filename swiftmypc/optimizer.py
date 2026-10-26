@@ -200,6 +200,23 @@ def _plan_startup(admin: bool) -> list[Action]:
                    0, len(found), items=found)]
 
 
+def _plan_stop_services() -> list[Action]:
+    """Running updater/telemetry services that can be stopped right now (they start again when needed)."""
+    found = [s for s in services.list_services()
+             if s.name.lower().startswith(SAFE_SERVICES) and s.can_change and s.status == "running"]
+    if not found:
+        return []
+    return [Action("stop", "stop", f"Stop {len(found)} updater/telemetry service{'s' * (len(found) > 1)}",
+                   _fmt_list(s.display for s in found) + ".",
+                   sum(s.memory for s in found), len(found), needs_admin=True, items=found)]
+
+
+def plan_unnecessary(admin: bool) -> list[Action]:
+    """What 'End unnecessary tasks' would close: windowless helpers, plus running
+    updater services when we're admin."""
+    return _plan_apps() + (_plan_stop_services() if admin else [])
+
+
 def plan(admin: bool, auto_only: bool = False) -> list[Action]:
     actions = _plan_files(admin) + _plan_apps()
     if auto_only:
@@ -257,6 +274,15 @@ def run(actions: list[Action]) -> int:
             elif a.group == "apps":
                 ended, denied = end_processes([pid for pid, _, _ in a.items])
                 a.result = f"closed {ended}" + (f", {denied} need admin" if denied else "")
+            elif a.group == "stop":
+                done = 0
+                for s in a.items:
+                    try:
+                        services.stop(s)
+                        done += 1
+                    except OSError:
+                        pass
+                a.result = f"{done} stopped"
             elif a.group == "services":
                 done = 0
                 for s in a.items:
