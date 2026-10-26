@@ -19,7 +19,13 @@ A small, honest Windows performance helper. It shows you **what** is slowing you
 
 Windows deliberately uses spare RAM as a cache, because unused RAM is wasted RAM. Tools that "free" it make the number look nicer for a moment, then make apps slower while Windows reloads what it had cached. The real fix for high memory or CPU use is closing or removing the app responsible, or stopping it from starting with Windows. That's what SwiftMyPC helps you do.
 
-## Run it
+## Download
+
+Grab **SwiftMyPC.exe** from the [latest release](https://github.com/yassirabidy/SwiftMyPC/releases/latest) and double-click it. No install, no Python needed. Windows 10/11, 64-bit.
+
+> Windows SmartScreen may say "Windows protected your PC" because the app isn't code-signed. Click **More info → Run anyway**. You can also build the .exe yourself from source (see below).
+
+## Run from source
 
 Requires Windows 10/11 and [Python 3.10+](https://www.python.org/downloads/).
 
@@ -36,11 +42,15 @@ pip install -r requirements.txt
 python -m swiftmypc
 ```
 
+To build the .exe yourself, run `build.bat`. The result is in `dist\SwiftMyPC.exe`.
+
 Some actions (Windows temp files, Windows Update cache, startup apps installed for all users, ending some system-level apps) need administrator rights. Use the **Restart as admin** button in the app.
 
 ## Project layout
 
 ```
+launcher.py    entry point for the .exe
+build.bat      builds dist\SwiftMyPC.exe with PyInstaller
 swiftmypc/
   app.py       UI (tkinter)
   monitor.py   fast process sampling via NtQuerySystemInformation

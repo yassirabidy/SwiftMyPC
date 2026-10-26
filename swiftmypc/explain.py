@@ -77,6 +77,7 @@ DESCRIPTIONS = {
     "vmmem": "Virtual machine / WSL / Docker memory. Shut down WSL with 'wsl --shutdown'.",
     "vmmemwsl": "WSL memory. Shut down with 'wsl --shutdown'.",
     "claude.exe": "Claude desktop app.",
+    "swiftmypc.exe": "SwiftMyPC (this app).",
 }
 
 # Killing these crashes or locks up Windows.

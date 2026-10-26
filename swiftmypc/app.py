@@ -29,6 +29,12 @@ FONT = "Segoe UI"
 REFRESH_MS = 2000
 
 
+def resource_path(*parts: str) -> str:
+    """Path to a bundled file, both from source and inside the PyInstaller .exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, *parts)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -36,6 +42,10 @@ class App(tk.Tk):
         self.geometry("1100x720")
         self.minsize(900, 560)
         self.configure(bg=BG)
+        try:
+            self.iconbitmap(default=resource_path("assets", "icon.ico"))
+        except tk.TclError:
+            pass
         self._queue: queue.Queue = queue.Queue()
         self.admin = startup.is_admin()
         self._build_style()
@@ -572,6 +582,8 @@ class CleanerTab(ttk.Frame):
 def main():
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        # Own taskbar identity, so Windows shows our icon instead of Python's.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SwiftMyPC")
     except Exception:
         pass
     App().mainloop()
