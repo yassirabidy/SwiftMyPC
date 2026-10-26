@@ -12,8 +12,11 @@ from tkinter import messagebox, ttk
 
 import psutil
 
-from . import __version__, cleaner, startup
+from . import __version__, cleaner, services, startup
+from .charts import HistoryChart
 from .monitor import ProcessSampler, end_processes, fmt_bytes, system_stats
+from .settings import Settings, set_start_with_windows, starts_with_windows
+from .tray import AlertWatcher, Tray
 
 BG = "#14161b"
 PANEL = "#1d2027"
@@ -24,9 +27,11 @@ ACCENT = "#4f8cff"
 OK = "#3ecf8e"
 WARN = "#f0a63a"
 DANGER = "#ef5b5b"
+PURPLE = "#b07cff"
 FONT = "Segoe UI"
 
 REFRESH_MS = 2000
+HISTORY_SECONDS = 600
 
 
 def resource_path(*parts: str) -> str:
@@ -35,19 +40,69 @@ def resource_path(*parts: str) -> str:
     return os.path.join(base, *parts)
 
 
-class App(tk.Tk):
+class SingleInstance:
+    """Only one SwiftMyPC at a time; starting a second one shows the first."""
+
+    MUTEX, EVENT = "Local\\SwiftMyPC.Instance", "Local\\SwiftMyPC.Show"
+
     def __init__(self):
+        k = self.kernel32 = ctypes.windll.kernel32
+        k.CreateMutexW.restype = k.CreateEventW.restype = k.OpenEventW.restype = ctypes.c_void_p
+        self.mutex = self.event = None
+
+    def acquire(self) -> bool:
+        k = self.kernel32
+        self.mutex = k.CreateMutexW(None, False, self.MUTEX)
+        if k.GetLastError() in (183, 5):  # already exists / owned by an elevated copy
+            k.CloseHandle(ctypes.c_void_p(self.mutex))
+            self.mutex = None
+            return False
+        self.event = k.CreateEventW(None, False, False, self.EVENT)
+        return True
+
+    def signal_existing(self) -> bool:
+        ev = self.kernel32.OpenEventW(0x0002, False, self.EVENT)  # EVENT_MODIFY_STATE
+        if not ev:
+            return False
+        self.kernel32.SetEvent(ctypes.c_void_p(ev))
+        self.kernel32.CloseHandle(ctypes.c_void_p(ev))
+        return True
+
+    def show_requested(self) -> bool:
+        return bool(self.event) and self.kernel32.WaitForSingleObject(ctypes.c_void_p(self.event), 0) == 0
+
+    def release(self):
+        for h in (self.mutex, self.event):
+            if h:
+                self.kernel32.CloseHandle(ctypes.c_void_p(h))
+        self.mutex = self.event = None
+
+
+class App(tk.Tk):
+    def __init__(self, start_hidden: bool = False, instance: SingleInstance | None = None):
         super().__init__()
         self.title("SwiftMyPC")
-        self.geometry("1100x720")
-        self.minsize(900, 560)
+        self.geometry("1100x820")
+        self.minsize(900, 600)
         self.configure(bg=BG)
+        if start_hidden:
+            self.withdraw()
         try:
             self.iconbitmap(default=resource_path("assets", "icon.ico"))
         except tk.TclError:
             pass
         self._queue: queue.Queue = queue.Queue()
+        self.instance = instance
         self.admin = startup.is_admin()
+        self.settings = Settings()
+        self.watcher = AlertWatcher()
+        self.tray = None
+        try:
+            self.tray = Tray(self, resource_path("assets", "icon.png"))
+        except Exception:
+            self.deiconify()  # no tray (e.g. pystray missing): never stay invisible
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build_style()
         self._build_header()
 
@@ -55,12 +110,60 @@ class App(tk.Tk):
         nb.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.monitor_tab = MonitorTab(nb, self)
         self.startup_tab = StartupTab(nb, self)
+        self.services_tab = ServicesTab(nb, self)
         self.cleaner_tab = CleanerTab(nb, self)
         nb.add(self.monitor_tab, text="  Monitor  ")
         nb.add(self.startup_tab, text="  Startup apps  ")
+        nb.add(self.services_tab, text="  Services  ")
         nb.add(self.cleaner_tab, text="  Cleaner  ")
 
         self.after(100, self._drain)
+
+    # --- window / tray -----------------------------------------------------------
+
+    def call_soon(self, fn):
+        """Run fn on the UI thread (safe to call from any thread)."""
+        self._queue.put((lambda _r, _e: fn(), None, None))
+
+    def show_window(self):
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        self.focus_force()
+
+    def on_close(self):
+        if self.tray and self.settings["close_to_tray"]:
+            self.withdraw()
+            if not self.settings["tray_hint_shown"]:
+                self.tray.notify("SwiftMyPC is still running",
+                                 "It keeps watching for problems from the tray. "
+                                 "Right-click the icon to quit.")
+                self.settings.set("tray_hint_shown", True)
+        else:
+            self.quit_app()
+
+    def quit_app(self):
+        if self.tray:
+            self.tray.stop()
+        if self.instance:
+            self.instance.release()
+        self.destroy()
+
+    def set_alerts(self, enabled: bool):
+        self.settings.set("alerts", enabled)
+        self.alerts_var.set(enabled)
+        if self.tray:
+            self.tray.refresh_menu()
+
+    def on_sample(self, stats, apps):
+        """Called every refresh by the Monitor tab, even while the window is hidden."""
+        if not self.tray:
+            return
+        self.tray.set_tooltip(f"SwiftMyPC · CPU {stats['cpu']:.0f}% · Memory {stats['mem_percent']:.0f}%")
+        alerts = self.watcher.feed(stats, apps)
+        if self.settings["alerts"]:
+            for title, message in alerts:
+                self.tray.notify(title, message)
 
     # --- background work -------------------------------------------------------
 
@@ -82,6 +185,8 @@ class App(tk.Tk):
                     cb(res, err)
         except queue.Empty:
             pass
+        if self.instance and self.instance.show_requested():
+            self.show_window()
         self.after(100, self._drain)
 
     # --- layout ------------------------------------------------------------------
@@ -111,6 +216,16 @@ class App(tk.Tk):
         s.configure("Card.TCheckbutton", background=PANEL, foreground=TEXT, font=(FONT, 10, "bold"))
         s.map("Card.TCheckbutton", background=[("active", PANEL)])
         s.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, insertcolor=TEXT, padding=6)
+        s.configure("TCombobox", fieldbackground=PANEL, background=PANEL_HI, foreground=TEXT,
+                    arrowcolor=TEXT, padding=5)
+        s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)],
+              selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", TEXT)])
+        self.option_add("*TCombobox*Listbox.background", PANEL)
+        self.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", "#2c4a80")
+        s.configure("TMenubutton", background=PANEL_HI, foreground=TEXT, borderwidth=0,
+                    padding=(14, 7), arrowcolor=TEXT)
+        s.map("TMenubutton", background=[("active", "#323744")])
         s.configure("TNotebook", background=BG, borderwidth=0, tabmargins=0)
         s.configure("TNotebook.Tab", background=BG, foreground=MUTED, padding=(10, 8), borderwidth=0)
         s.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", TEXT)])
@@ -132,11 +247,46 @@ class App(tk.Tk):
             side="left", pady=(8, 0))
         ttk.Button(h, text="Run health check", style="Accent.TButton",
                    command=self.health_check).pack(side="right")
+        self._build_settings_menu(h).pack(side="right", padx=(8, 0))
         if self.admin:
             ttk.Label(h, text="Administrator  ", foreground=OK).pack(side="right")
         else:
             ttk.Button(h, text="Restart as admin", command=self.restart_as_admin).pack(
-                side="right", padx=8)
+                side="right", padx=(8, 0))
+
+    def _build_settings_menu(self, parent):
+        btn = ttk.Menubutton(parent, text="Settings")
+        menu = tk.Menu(btn, tearoff=False, bg=PANEL, fg=TEXT, activebackground="#2c4a80",
+                       activeforeground=TEXT, selectcolor=TEXT, bd=0)
+        self.alerts_var = tk.BooleanVar(value=self.settings["alerts"])
+        tray_var = tk.BooleanVar(value=self.settings["close_to_tray"])
+        boot_var = tk.BooleanVar(value=starts_with_windows())
+
+        def toggle_tray():
+            self.settings.set("close_to_tray", tray_var.get())
+            if self.tray:
+                self.tray.refresh_menu()
+
+        def toggle_boot():
+            try:
+                set_start_with_windows(boot_var.get())
+            except OSError as e:
+                boot_var.set(starts_with_windows())
+                messagebox.showerror("Settings", str(e), parent=self)
+
+        state = "normal" if self.tray else "disabled"
+        menu.add_checkbutton(label="Alerts for high CPU, memory and low disk", variable=self.alerts_var,
+                             command=lambda: self.set_alerts(self.alerts_var.get()), state=state)
+        menu.add_checkbutton(label="Keep running in the tray when closed", variable=tray_var,
+                             command=toggle_tray, state=state)
+        menu.add_checkbutton(label="Start with Windows (in the tray)", variable=boot_var,
+                             command=toggle_boot)
+        menu.add_separator()
+        menu.add_command(label="Quit SwiftMyPC", command=self.quit_app)
+        btn["menu"] = menu
+        menu.bind("<Map>", lambda _: (tray_var.set(self.settings["close_to_tray"]),
+                                      self.alerts_var.set(self.settings["alerts"])))
+        return btn
 
     def restart_as_admin(self):
         if getattr(sys, "frozen", False):
@@ -145,9 +295,14 @@ class App(tk.Tk):
             exe = sys.executable
             args = "-m swiftmypc"
             cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if self.instance:
+            self.instance.release()  # let the elevated copy become the running instance
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, cwd, 1)
         if rc > 32:
-            self.destroy()
+            self.instance = None
+            self.quit_app()
+        elif self.instance:
+            self.instance.acquire()  # UAC was cancelled; keep being the running copy
 
     # --- health check ----------------------------------------------------------
 
@@ -226,6 +381,11 @@ def run_health_check(admin: bool, junk_sizes: dict | None = None) -> list[tuple[
     else:
         findings.append(("ok", f"{len(enabled)} apps start with Windows. That's reasonable."))
 
+    optional = [s for s in services.list_services() if s.level]
+    if optional:
+        findings.append(("tip", f"{len(optional)} background services start automatically but probably "
+                                "don't need to. Review them in the Services tab."))
+
     junk = 0
     for t in cleaner.targets():
         if t.needs_admin and not admin:
@@ -269,6 +429,12 @@ class MonitorTab(ttk.Frame):
             bar = ttk.Progressbar(c, maximum=100, style="Ok.Horizontal.TProgressbar")
             bar.pack(fill="x", pady=(8, 0))
             self.cards[key] = (val, sub, bar)
+
+        self.chart = HistoryChart(self, [("cpu", "CPU", ACCENT), ("mem", "Memory", PURPLE)],
+                                  capacity=HISTORY_SECONDS * 1000 // REFRESH_MS,
+                                  span_label=f"{HISTORY_SECONDS // 60} min ago",
+                                  bg=PANEL, grid=PANEL_HI, text=TEXT, muted=MUTED, height=130)
+        self.chart.pack(fill="x", pady=(0, 12))
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 8))
@@ -316,6 +482,8 @@ class MonitorTab(ttk.Frame):
 
     def _on_sample(self, result, err):
         stats, apps = result
+        self.chart.add(cpu=stats["cpu"], mem=stats["mem_percent"])
+        self.app.on_sample(stats, apps)
         if any(a.key.isdigit() == self._group for a in apps[:1]):
             return  # sampled before the grouping changed
         self.rows = {a.key: a for a in apps}
@@ -488,6 +656,170 @@ class StartupTab(ttk.Frame):
             messagebox.showinfo("Startup apps", f"Couldn't find the file:\n{path}", parent=self)
 
 
+class ServicesTab(ttk.Frame):
+    FILTERS = ("Worth reviewing", "App services", "All services")
+    LEVEL_ORDER = {"optional": 0, "review": 1, "": 2}
+
+    def __init__(self, parent, app: App):
+        super().__init__(parent, padding=14)
+        self.app = app
+        self.services: dict[str, services.Service] = {}
+        self.filter = tk.StringVar(value=self.FILTERS[0])
+
+        ttk.Label(self, text="Services run in the background even when no app is open. Setting the ones "
+                             "you don't need to Manual means they only start when something actually "
+                             "needs them. Core Windows services are locked, and every change can be restored.",
+                  style="Muted.TLabel", wraplength=1000, justify="left").pack(anchor="w", pady=(0, 10))
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(0, 8))
+        box = ttk.Combobox(bar, textvariable=self.filter, values=self.FILTERS, state="readonly", width=18)
+        box.pack(side="left")
+        box.bind("<<ComboboxSelected>>", lambda _: self._render())
+        ttk.Button(bar, text="Set to Manual", style="Accent.TButton",
+                   command=lambda: self._change("demand")).pack(side="left", padx=(12, 0))
+        ttk.Button(bar, text="Disable", style="Danger.TButton",
+                   command=lambda: self._change("disabled")).pack(side="left", padx=6)
+        ttk.Button(bar, text="Restore original", command=self._restore).pack(side="left")
+        ttk.Button(bar, text="Stop now", command=self._stop).pack(side="left", padx=6)
+        ttk.Button(bar, text="Refresh", command=self.load).pack(side="right")
+        self.count = ttk.Label(bar, text="Loading…", style="Muted.TLabel")
+        self.count.pack(side="right", padx=12)
+
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True)
+        cols = (("name", "Service", 270), ("status", "Status", 80), ("start", "Starts", 150),
+                ("source", "From", 70), ("mem", "Memory", 80), ("advice", "Advice", 480))
+        self.tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings",
+                                 selectmode="extended")
+        for col, title, width in cols:
+            self.tree.heading(col, text=title)
+            self.tree.column(col, width=width, anchor="e" if col == "mem" else "w",
+                             stretch=(col == "advice"))
+        self.tree.tag_configure("optional", foreground=WARN)
+        self.tree.tag_configure("review", foreground="#8fb6ff")
+        self.tree.tag_configure("locked", foreground=MUTED)
+        sb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", lambda _: self._show_details())
+
+        self.details = ttk.Label(self, text="Select a service to see what it does.", style="Muted.TLabel",
+                                 wraplength=1000, justify="left")
+        self.details.pack(anchor="w", pady=(8, 0))
+        ttk.Label(self, text="Orange = safe to set to Manual.   Blue = app service that starts with Windows: "
+                             "check whether you use that app.", style="Muted.TLabel").pack(anchor="w")
+        self.load()
+
+    def load(self):
+        self.count.config(text="Loading…")
+
+        def show(result, err):
+            if err:
+                self.count.config(text=f"Couldn't list services: {err}")
+                return
+            self.services = {s.name: s for s in result}
+            self._render()
+        self.app.run_bg(services.list_services, show)
+
+    def _visible(self):
+        f = self.filter.get()
+        items = list(self.services.values())
+        if f == self.FILTERS[0]:
+            items = [s for s in items if s.level]
+        elif f == self.FILTERS[1]:
+            items = [s for s in items if not s.is_windows]
+        return sorted(items, key=lambda s: (self.LEVEL_ORDER[s.level], s.display.lower()))
+
+    def _row(self, s):
+        status = {"running": "Running", "stopped": "Stopped"}.get(s.status, s.status.replace("_", " ").title())
+        values = (s.display, status, s.start_label, s.source, fmt_bytes(s.memory) if s.memory else "",
+                  s.advice)
+        tag = s.level if s.level else ("locked" if not s.can_change else "")
+        return values, (tag,) if tag else ()
+
+    def _render(self):
+        sel = set(self.tree.selection())
+        self.tree.delete(*self.tree.get_children())
+        visible = self._visible()
+        for s in visible:
+            values, tags = self._row(s)
+            self.tree.insert("", "end", iid=s.name, values=values, tags=tags)
+        keep = [iid for iid in sel if self.tree.exists(iid)]
+        if keep:
+            self.tree.selection_set(keep)
+        worth = sum(1 for s in self.services.values() if s.level)
+        self.count.config(text=f"{worth} to review · {len(self.services)} total")
+
+    def _show_details(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        s = self.services[sel[0]]
+        lock = "" if s.can_change else "  (core Windows service: locked)"
+        self.details.config(text=f"{s.display}{lock}: {s.description or 'No description.'}\n{s.binpath}")
+
+    def _selected(self):
+        sel = [self.services[iid] for iid in self.tree.selection()]
+        if not sel:
+            messagebox.showinfo("Services", "Select one or more services first.", parent=self)
+            return []
+        if not self.app.admin:
+            messagebox.showinfo("Services", "Changing services needs administrator rights.\n\n"
+                                "Click 'Restart as admin' at the top, then try again.", parent=self)
+            return []
+        locked = [s.display for s in sel if not s.can_change]
+        if locked:
+            messagebox.showwarning("Services", "These are core Windows services and SwiftMyPC won't change "
+                                   "them:\n\n" + "\n".join(locked), parent=self)
+        return [s for s in sel if s.can_change]
+
+    def _run(self, chosen, action, verb):
+        def work():
+            errors = []
+            for s in chosen:
+                try:
+                    if action(s) is False:
+                        errors.append(f"{s.display}: nothing to restore (SwiftMyPC never changed it)")
+                except OSError as e:
+                    errors.append(f"{s.display}: {e}")
+            return errors
+
+        def done(errors, err):
+            if err:
+                errors = [str(err)]
+            self._render()
+            self._show_details()
+            if errors:
+                messagebox.showwarning("Services", f"Some services couldn't be {verb}:\n\n" + "\n".join(errors),
+                                       parent=self)
+        self.app.run_bg(work, done)
+
+    def _change(self, start):
+        chosen = self._selected()
+        if not chosen:
+            return
+        if start == "disabled" and not messagebox.askyesno(
+                "Disable services", "Disabled services can't start at all, even when an app needs them. "
+                "If something stops working, select it here and click 'Restore original'.\n\nDisable "
+                + ", ".join(s.display for s in chosen) + "?", icon="warning", parent=self):
+            return
+        self._run(chosen, lambda s: services.set_start(s, start), "changed")
+
+    def _restore(self):
+        chosen = self._selected()
+        if chosen:
+            self._run(chosen, services.restore, "restored")
+
+    def _stop(self):
+        chosen = self._selected()
+        if chosen and messagebox.askyesno("Stop services", "Stop " + ", ".join(s.display for s in chosen)
+                                          + " now? It may start again later unless you also set it to "
+                                          "Manual or Disabled.", parent=self):
+            self._run(chosen, services.stop, "stopped")
+
+
 class CleanerTab(ttk.Frame):
     def __init__(self, parent, app: App):
         super().__init__(parent, padding=14)
@@ -586,4 +918,10 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SwiftMyPC")
     except Exception:
         pass
-    App().mainloop()
+    instance = SingleInstance()
+    if not instance.acquire():
+        if not instance.signal_existing():
+            ctypes.windll.user32.MessageBoxW(None, "SwiftMyPC is already running. Look for its icon "
+                                             "in the system tray.", "SwiftMyPC", 0x40)
+        return
+    App(start_hidden="--tray" in sys.argv, instance=instance).mainloop()
