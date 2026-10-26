@@ -27,6 +27,12 @@ A calm, Windows 11-style interface with light and dark themes (follows Windows, 
 |---|---|
 | ![Smart Optimize](docs/optimize.png) | ![Cleaner](docs/cleaner.png) |
 
+## Support
+
+SwiftMyPC is free. If it keeps your PC quick, you can [donate with PayPal](https://paypal.me/yassirabidy) or star the project here on GitHub. Problems and ideas go to [Issues](https://github.com/yassirabidy/SwiftMyPC/issues).
+
+![About & support](docs/about.png)
+
 ## Why no "RAM cleaner"?
 
 Windows deliberately uses spare RAM as a cache, because unused RAM is wasted RAM. Tools that "free" it make the number look nicer for a moment, then make apps slower while Windows reloads what it had cached. The real fix for high memory or CPU use is closing or removing the app responsible, or stopping it from starting with Windows. That's what SwiftMyPC helps you do.

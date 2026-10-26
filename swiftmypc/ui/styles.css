@@ -510,13 +510,20 @@ kbd {
 .empty-small h3 { margin: 6px 0 0; color: var(--text); font: 600 17px var(--font-display); }
 .empty-small p { margin: 0 0 8px; max-width: 420px; }
 
-.hero-panel {
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chips .chip { padding: 3px 10px; font-size: 12px; }
+
+/* ---------- About & support ---------- */
+
+.content.fit { overflow: hidden; padding-bottom: 24px; }
+.about { max-width: 1000px; }
+.about-hero {
   position: relative;
   display: flex;
   align-items: center;
   gap: 26px;
   margin-bottom: 18px;
-  padding: 26px 30px;
+  padding: 30px 32px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 20px;
@@ -526,16 +533,79 @@ kbd {
     var(--surface);
   box-shadow: var(--shadow);
 }
-.hero-panel h2 { margin: 4px 0 0; font: 700 28px/1.15 var(--font-display); letter-spacing: -0.02em; }
-.hero-panel p { margin: 6px 0 0; color: var(--muted); font-size: 15px; }
-.hero-panel .grow { flex: 1; min-width: 0; }
-.hero-art { position: relative; width: 120px; height: 92px; flex: none; }
-.hero-art span { position: absolute; width: 64px; height: 64px; border-radius: 19px; box-shadow: var(--shadow-lg); }
-.hero-art span:nth-child(1) { left: 0; top: 2px; background: linear-gradient(135deg, #45d6a8, #10a37f); transform: rotate(-9deg); animation: float 5s ease-in-out infinite; }
-.hero-art span:nth-child(2) { right: 0; top: 0; background: linear-gradient(135deg, #ffb37a, #f2b33d); transform: rotate(8deg); animation: float 5s ease-in-out -1.6s infinite; }
-.hero-art span:nth-child(3) { left: 28px; top: 22px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--brand), var(--brand-2)); animation: float 5s ease-in-out -3.2s infinite; }
-.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.chips .chip { padding: 3px 10px; font-size: 12px; }
+.about-hero > .grow { flex: 1; min-width: 0; }
+.about-hero h2 { margin: 0; font: 700 28px/1.15 var(--font-display); letter-spacing: -0.02em; }
+.about-hero p { margin: 6px 0 14px; color: var(--muted); font-size: 15px; }
+.about-hero .chips { margin-top: 0; }
+.update-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.update-line p { flex: 1; min-width: 220px; margin: 0; color: var(--muted); font-size: 13.5px; }
+.update-line .btn { height: 34px; padding: 0 14px; }
+
+.about-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 760px) { .about-grid { grid-template-columns: minmax(0, 1fr); } }
+.about-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.about-card > p { margin: 8px 0 0; color: var(--muted); line-height: 1.6; }
+.about-card h3 { margin: 0; font: 650 19px/1.25 var(--font-display); }
+.about-person { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+.about-person p { margin: 2px 0 0; color: var(--muted); }
+.socials { display: flex; gap: 4px; margin: 6px 0 0 -6px; }
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--brand), 0 10px 26px rgba(109, 92, 255, 0.35);
+}
+.about-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.about-card.support { background: radial-gradient(110% 90% at 100% 0%, rgba(0, 112, 186, 0.16), transparent 55%), var(--surface); }
+.support-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 12px;
+  border-radius: 16px;
+  background: rgba(0, 112, 186, 0.16);
+  color: #3a9be0;
+}
+.about-card.support > p { margin-bottom: 18px; }
+.btn-paypal {
+  height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 12px;
+  background: #0070ba;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 8px 20px rgba(0, 112, 186, 0.35);
+}
+.btn-paypal .paypal-word { display: inline-flex; align-items: center; gap: 5px; }
+.btn-paypal .paypal-word img { height: 17px; }
+.btn-paypal:hover { background: #1084d0; box-shadow: 0 10px 26px rgba(0, 112, 186, 0.45); }
+.star-link { margin-top: 12px; padding-left: 4px; text-align: left; font-weight: 500; }
+.about-foot { margin: 22px 0 0; color: var(--faint); font-size: 12.5px; }
 
 /* ---------- Option rows, toggles ---------- */
 

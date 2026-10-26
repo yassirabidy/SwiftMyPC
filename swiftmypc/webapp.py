@@ -19,6 +19,16 @@ from .health import run_health_check
 from .monitor import end_processes
 from .settings import set_start_with_windows, starts_with_windows
 
+# The only web pages the app can open. The page asks by key, never by URL.
+LINKS = {
+    "repo": "https://github.com/yassirabidy/SwiftMyPC",
+    "issues": "https://github.com/yassirabidy/SwiftMyPC/issues",
+    "releases": "https://github.com/yassirabidy/SwiftMyPC/releases/latest",
+    "donate": "https://paypal.me/yassirabidy",
+    "github": "https://github.com/yassirabidy",
+    "linkedin": "https://www.linkedin.com/in/yassirabidy",
+}
+
 LIGHT_BG, DARK_BG = "#f6f7fb", "#0e0f14"
 LIGHT_TEXT, DARK_TEXT = "#1b1c24", "#e9eaf2"
 
@@ -122,8 +132,9 @@ class Api:
     def quit_app(self):
         self._core.quit_app()
 
-    def open_url(self, url):
-        if str(url).startswith(("https://", "http://")):
+    def open_link(self, key):
+        url = LINKS.get(key)
+        if url:
             webbrowser.open(url)
 
     def open_location(self, path):

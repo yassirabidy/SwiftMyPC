@@ -99,6 +99,7 @@ const PAGES = {
   services: { label: 'Services', icon: 'cube', search: 'Search services…' },
   cleaner: { label: 'Cleaner', icon: 'broom' },
   settings: { label: 'Settings', icon: 'gear', foot: true },
+  about: { label: 'About & support', icon: 'heart', foot: true },
 };
 
 // ---------- toasts, menus, modals ----------
@@ -258,6 +259,7 @@ function go(page) {
   renderNav();
   const content = $('#content');
   content.scrollTop = 0;
+  content.classList.toggle('fit', page === 'about');
   content.classList.add('intro');
   setTimeout(() => content.classList.remove('intro'), 700);
   render();
@@ -266,7 +268,7 @@ function go(page) {
 function render() {
   const content = $('#content');
   ({ overview: renderOverview, processes: renderProcesses, startup: renderStartup, services: renderServices,
-     cleaner: renderCleaner, settings: renderSettings })[state.page](content);
+     cleaner: renderCleaner, settings: renderSettings, about: renderAbout })[state.page](content);
 }
 
 $('#search').addEventListener('input', (e) => {
@@ -776,29 +778,94 @@ function renderSettings(content) {
     h('div', { class: 'option' + (theme === k ? ' checked' : ''), role: 'radio', 'aria-checked': String(theme === k), tabindex: 0,
       onclick: () => setTheme(k), onkeydown: (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setTheme(k); } } },
       h('span', { class: 'ico lead' }, ico(i, 18)), h('div', { class: 'grow' }, h('strong', { text: l })), h('span', { class: 'radio' }))));
-  const v = state.boot.version;
   const updates = h('div', { class: 'option static' },
     h('span', { class: 'ico lead' }, ico('refresh', 18)),
-    h('div', { class: 'grow' }, h('strong', { text: `SwiftMyPC ${v}` }),
-      h('small', { text: state.update ? `Version ${state.update.version} is available.` : 'Checks GitHub for new versions every 6 hours.' })),
+    h('div', { class: 'grow' }, h('strong', { text: `SwiftMyPC ${state.boot.version}` }), h('small', { text: updateStatusText() })),
     h('button', { class: 'btn', onclick: checkUpdates }, 'Check now'));
-  const about = h('div', { class: 'hero-panel' },
-    h('div', { class: 'logo big' }, h('i'), h('i', {}, ico('zap', 26))),
-    h('div', { class: 'grow' }, h('span', { class: 'eyebrow', text: 'About' }), h('h2', { text: 'SwiftMyPC' }),
-      h('p', { text: 'A small, honest Windows helper. It shows what slows your PC down and fixes only what’s safe to fix.' }),
-      h('div', { class: 'chips' }, h('span', { class: 'chip accent', text: `Version ${v}` }), h('span', { class: 'chip', text: 'Free and open source' }),
-        h('span', { class: 'chip', text: 'Runs 100% on your PC' }))),
-    h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
-      h('button', { class: 'btn btn-github', onclick: () => api.open_url('https://github.com/yassirabidy/SwiftMyPC') }, ico('github', 16), 'GitHub'),
-      h('button', { class: 'btn', onclick: () => api.quit_app() }, ico('power', 16), 'Quit SwiftMyPC')));
+  const quit = h('div', { class: 'option static' },
+    h('span', { class: 'ico lead' }, ico('power', 18)),
+    h('div', { class: 'grow' }, h('strong', { text: 'Quit SwiftMyPC' }), h('small', { text: 'Stops the tray icon, alerts and the daily Smart Optimize until you open it again.' })),
+    h('button', { class: 'btn', onclick: () => api.quit_app() }, 'Quit'));
   const section = (title, meta, ...kids) => h('div', { class: 'section' },
     h('div', { class: 'section-head' }, h('h2', { text: title }), meta ? h('span', { class: 'meta', text: meta }) : null, h('span', { class: 'spacer' })), ...kids);
   content.replaceChildren(
-    about,
     section('Background', s.has_tray ? null : 'Tray features are unavailable on this PC', ...toggles),
     section('Appearance', null, themes),
-    section('Updates', null, updates));
+    section('Updates', null, updates, quit));
 }
+
+function updateStatusText() {
+  if (state.update) return `Version ${state.update.version} is available.`;
+  if (state.checkedAt) return 'You have the latest version.';
+  return 'Checks GitHub for new versions every 6 hours.';
+}
+
+// ---------- about & support ----------
+
+function renderAbout(content) {
+  setHead('About', 'Who makes SwiftMyPC, and how to support it', [
+    h('button', { class: 'btn btn-primary', onclick: openSmartOptimize }, ico('zap', 17), 'Smart Optimize'),
+  ]);
+  const link = (key, iconName, label, cls) => h('button', { class: 'btn ' + (cls || ''), onclick: () => api.open_link(key) }, ico(iconName, 17), label);
+  const page = h('div', { class: 'about' },
+    h('section', { class: 'about-hero' },
+      h('span', { class: 'logo big', 'aria-hidden': 'true' }, h('i'), h('i', { style: { display: 'grid', placeItems: 'center', color: '#fff' } }, ico('zap', 26))),
+      h('div', { class: 'grow' },
+        h('h2', { text: 'SwiftMyPC' }),
+        h('p', { text: 'See what slows your PC down, and fix only what’s safe to fix.' }),
+        h('div', { class: 'chips' },
+          h('span', { class: 'chip', text: `Version ${state.boot.version}` }),
+          h('span', { class: 'chip', text: 'Free' }),
+          h('span', { class: 'chip', text: 'Windows 10 & 11' })),
+        h('div', { class: 'update-line' },
+          h('p', { id: 'about-update', text: updateStatusText() }),
+          state.update
+            ? h('button', { class: 'btn btn-primary', onclick: () => $('#update-pill').click() }, ico('download', 16), `Install ${state.update.version}`)
+            : h('button', { class: 'btn', onclick: checkUpdates }, ico('activity', 16), 'Check for updates')))),
+    h('div', { class: 'about-grid' },
+      h('section', { class: 'about-card' },
+        h('div', { class: 'about-person' },
+          h('img', { class: 'avatar', src: 'assets/avatar.jpg', alt: 'Yassir Abidy' }),
+          h('div', {},
+            h('span', { class: 'eyebrow', text: 'Made by' }),
+            h('h3', { text: 'Yassir Abidy' }),
+            h('p', { text: 'Independent developer' }),
+            h('div', { class: 'socials' },
+              h('button', { class: 'icon-btn', title: 'GitHub profile', 'aria-label': 'GitHub profile', onclick: () => api.open_link('github') }, ico('github', 17)),
+              h('button', { class: 'icon-btn', title: 'LinkedIn profile', 'aria-label': 'LinkedIn profile', onclick: () => api.open_link('linkedin') }, ico('linkedin', 17))))),
+        h('p', { text: 'SwiftMyPC is built and maintained by Yassir Abidy. It started as a way to see what was really slowing a PC down, and grew into a small toolkit that fixes only what’s safe: junk files, background helpers, startup apps and services.' }),
+        h('p', { text: 'New versions are published on GitHub, where you can also report problems and suggest ideas.' }),
+        h('div', { class: 'about-actions' },
+          link('repo', 'github', 'View on GitHub', 'btn-github'),
+          link('issues', 'message', 'Report an issue'))),
+      h('section', { class: 'about-card support' },
+        h('span', { class: 'support-icon' }, ico('heart', 28)),
+        h('h3', { text: 'Support the app' }),
+        h('p', { text: 'SwiftMyPC is free. If it keeps your PC quick, you can send a small donation with PayPal. It helps keep the app up to date as Windows changes.' }),
+        h('button', { class: 'btn btn-paypal', onclick: () => api.open_link('donate') }, ico('heart', 17), 'Donate with',
+          h('span', { class: 'paypal-word' }, h('img', { src: 'assets/paypal.png', alt: '' }), 'PayPal')),
+        h('button', { class: 'text-btn star-link', onclick: () => api.open_link('repo') }, ico('star', 15),
+          'Or star the project on GitHub. It’s free and helps others find it.'))),
+    h('p', { class: 'about-foot', text: 'Independent app. Not affiliated with Microsoft. SwiftMyPC only changes what it shows you first, and runs entirely on your PC.' }));
+  content.replaceChildren(page);
+  fitPage();
+  setTimeout(fitPage, 50);  // again once the avatar image has its size
+}
+
+// The About page never scrolls: it is laid out at its normal size, then scaled to fit the
+// space the window gives it (down for small windows, a little up for large ones).
+function fitPage() {
+  const content = $('#content');
+  const page = content.querySelector('.about');
+  if (!page) return;
+  page.style.zoom = '1';
+  const style = getComputedStyle(content);
+  const availableWidth = content.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const availableHeight = content.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  const scale = Math.min(1.2, availableWidth / page.scrollWidth, availableHeight / page.scrollHeight);
+  page.style.zoom = String(Math.max(0.45, Math.floor(scale * 1000) / 1000));
+}
+window.addEventListener('resize', fitPage);
 
 async function flipSetting(key) {
   state.settings = await call('set_setting', key, !state.settings[key]);
@@ -938,11 +1005,12 @@ $('#update-pill').addEventListener('click', async () => {
 
 async function checkUpdates() {
   const r = await call('check_update');
+  if (!r.error && !r.source) state.checkedAt = Date.now();
   if (r.source) toast('You’re running from source code. Update it with “git pull”.', { type: 'info' });
   else if (r.error) toast('Couldn’t check for updates: ' + r.error, { type: 'error' });
   else if (!r.update) toast(`You’re up to date (version ${state.boot.version}).`);
   else { state.update = r.update; renderUpdatePill(); toast(`Version ${r.update.version} is available.`, { type: 'info', action: { label: 'Install', fn: () => $('#update-pill').click() } }); }
-  if (state.page === 'settings') render();
+  if (state.page === 'settings' || state.page === 'about') render();
 }
 
 function renderAdmin() {
