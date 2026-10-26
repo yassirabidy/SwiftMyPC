@@ -37,13 +37,19 @@ def _chromium_caches(user_data: str) -> list[str]:
     return paths
 
 
+def browser_caches() -> dict[str, tuple[str, list[str]]]:
+    """Browser name -> (its process name, cache folders)."""
+    out = {}
+    for name, exe, rel in (("Chrome", "chrome.exe", r"Google\Chrome\User Data"),
+                           ("Edge", "msedge.exe", r"Microsoft\Edge\User Data"),
+                           ("Brave", "brave.exe", r"BraveSoftware\Brave-Browser\User Data")):
+        out[name] = (exe, _chromium_caches(os.path.join(LOCAL, rel)))
+    out["Firefox"] = ("firefox.exe", glob.glob(os.path.join(LOCAL, r"Mozilla\Firefox\Profiles\*\cache2")))
+    return out
+
+
 def targets() -> list[Target]:
-    browsers = []
-    for app, rel in (("Chrome", r"Google\Chrome\User Data"),
-                     ("Edge", r"Microsoft\Edge\User Data"),
-                     ("Brave", r"BraveSoftware\Brave-Browser\User Data")):
-        browsers += _chromium_caches(os.path.join(LOCAL, rel))
-    browsers += glob.glob(os.path.join(LOCAL, r"Mozilla\Firefox\Profiles\*\cache2"))
+    browsers = [p for _, paths in browser_caches().values() for p in paths]
 
     return [
         Target("user_temp", "Your temporary files",

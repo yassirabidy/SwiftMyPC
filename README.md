@@ -6,6 +6,14 @@ A small, honest Windows performance helper. It shows you **what** is slowing you
 
 ## Features
 
+- **⚡ Smart Optimize (one click)**: scans your PC and applies only the safe fixes in one go:
+  - deletes junk files (temp files, caches, crash reports, old update files). Never your own files, never the Recycle Bin
+  - clears browser caches only for browsers that are closed (you stay logged in)
+  - closes known background helpers (updaters, Phone Link, Widgets, Game Bar) **only if they have no open window**. They restart on their own when needed
+  - switches updater/telemetry services to **Manual** (never Disabled), so they still start whenever something needs them (admin)
+  - stops browser pre-launchers and updaters from starting with Windows
+
+  Service and startup changes are logged, and **Undo last changes** puts them back. With **Smart Optimize automatically once a day** (on by default, under Settings), SwiftMyPC cleans junk files and background helpers by itself when your PC isn't busy, and tells you what it freed. Browser caches are left out of the daily run, because wiping them every day would make browsing slower.
 - **Monitor**: live CPU, memory and disk usage, a **10-minute CPU/memory history graph**, and every running app grouped by name with a plain-English "what is it?" column. Select an app and click **End task** to free its CPU and memory. Core Windows processes are protected so you can't crash your PC by accident.
 - **Startup apps**: everything that launches when you sign in (registry and Startup folders). Disabling works exactly like Task Manager's: it's safe and fully reversible.
 - **Services**: audits background services and highlights the ones that start with Windows but don't need to (updaters, telemetry, Xbox services, leftover VPNs...). Set them to Manual or Disabled in one click. Core Windows services are locked, and the original setting is saved so **Restore original** always works. Needs admin.
@@ -13,9 +21,9 @@ A small, honest Windows performance helper. It shows you **what** is slowing you
 - **Health check**: one click gives you a short list of what is actually worth fixing.
 - **Tray icon and alerts**: SwiftMyPC keeps running in the system tray (hover it for live CPU/memory) and notifies you when CPU stays above 85% for a minute, memory stays above 90%, one app hogs the CPU for 2 minutes, or your system drive gets nearly full. Alerts fire only for problems that last, then stay quiet for 15 minutes. Turn alerts, close-to-tray and **Start with Windows** on or off under **Settings**.
 
-| Cleaner | Health check |
+| Smart Optimize | Cleaner |
 |---|---|
-| ![Cleaner](docs/cleaner.png) | ![Health check](docs/health.png) |
+| ![Smart Optimize](docs/optimize.png) | ![Cleaner](docs/cleaner.png) |
 
 ## Why no "RAM cleaner"?
 
@@ -56,6 +64,7 @@ build.bat      builds dist\SwiftMyPC.exe with PyInstaller
 swiftmypc/
   app.py       UI (tkinter), single-instance handling
   charts.py    CPU/memory history graph
+  optimizer.py Smart Optimize: safe-fix rules, run, undo
   tray.py      tray icon and alert rules
   services.py  services audit (sc.exe, with restorable backup)
   settings.py  settings and Start with Windows

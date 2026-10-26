@@ -9,6 +9,8 @@ DEFAULTS = {
     "alerts": True,           # tray notifications for high CPU / memory / low disk
     "close_to_tray": True,    # closing the window keeps SwiftMyPC running in the tray
     "tray_hint_shown": False,
+    "auto_optimize": True,    # daily Smart Optimize of junk files + background helpers
+    "last_auto_optimize": 0,
 }
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"

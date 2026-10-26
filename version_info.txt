@@ -1,15 +1,15 @@
 VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(0, 2, 0, 0), prodvers=(0, 2, 0, 0)),
+  ffi=FixedFileInfo(filevers=(0, 3, 0, 0), prodvers=(0, 3, 0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
       StringStruct('CompanyName', 'Yassir Abidy'),
       StringStruct('FileDescription', 'SwiftMyPC'),
-      StringStruct('FileVersion', '0.2.0'),
+      StringStruct('FileVersion', '0.3.0'),
       StringStruct('InternalName', 'SwiftMyPC'),
       StringStruct('LegalCopyright', 'MIT License'),
       StringStruct('OriginalFilename', 'SwiftMyPC.exe'),
       StringStruct('ProductName', 'SwiftMyPC'),
-      StringStruct('ProductVersion', '0.2.0')])]),
+      StringStruct('ProductVersion', '0.3.0')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
 )

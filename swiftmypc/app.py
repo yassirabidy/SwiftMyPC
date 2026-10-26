@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 
 import psutil
 
-from . import __version__, cleaner, services, startup
+from . import __version__, cleaner, optimizer, services, startup
 from .charts import HistoryChart
 from .monitor import ProcessSampler, end_processes, fmt_bytes, system_stats
 from .settings import Settings, set_start_with_windows, starts_with_windows
@@ -32,6 +32,8 @@ FONT = "Segoe UI"
 
 REFRESH_MS = 2000
 HISTORY_SECONDS = 600
+AUTO_FIRST_MS = 5 * 60 * 1000     # first automatic optimize check after start
+AUTO_CHECK_MS = 30 * 60 * 1000    # then every 30 minutes (runs at most once a day)
 
 
 def resource_path(*parts: str) -> str:
@@ -96,6 +98,9 @@ class App(tk.Tk):
         self.admin = startup.is_admin()
         self.settings = Settings()
         self.watcher = AlertWatcher()
+        self._optimizer_win = None
+        self._optimizing = False
+        self._last_cpu = None
         self.tray = None
         try:
             self.tray = Tray(self, resource_path("assets", "icon.png"))
@@ -118,6 +123,7 @@ class App(tk.Tk):
         nb.add(self.cleaner_tab, text="  Cleaner  ")
 
         self.after(100, self._drain)
+        self.after(AUTO_FIRST_MS, self._auto_optimize_tick)
 
     # --- window / tray -----------------------------------------------------------
 
@@ -155,8 +161,45 @@ class App(tk.Tk):
         if self.tray:
             self.tray.refresh_menu()
 
+    # --- smart optimize --------------------------------------------------------
+
+    def open_optimizer(self):
+        if self._optimizer_win is not None and self._optimizer_win.winfo_exists():
+            self._optimizer_win.lift()
+            return
+        self.show_window()
+        self._optimizer_win = OptimizeDialog(self)
+
+    def _auto_optimize_tick(self):
+        """Daily automatic run: junk files and background helpers only, when the PC isn't busy."""
+        self.after(AUTO_CHECK_MS, self._auto_optimize_tick)
+        s = self.settings
+        if (not s["auto_optimize"] or self._optimizing
+                or time.time() - s["last_auto_optimize"] < 24 * 3600
+                or self._last_cpu is None or self._last_cpu > 50):
+            return
+        self._optimizing = True
+
+        def work():
+            actions = optimizer.plan(self.admin, auto_only=True)
+            return actions, optimizer.run(actions)
+
+        def done(result, err):
+            self._optimizing = False
+            self.settings.set("last_auto_optimize", time.time())
+            if err or not self.tray:
+                return
+            actions, freed = result
+            closed = sum(a.count for a in actions if a.group == "apps")
+            if freed >= 20 * 1024 ** 2 or closed:
+                msg = f"Freed {fmt_bytes(freed)} of disk space"
+                msg += f" and closed {closed} background helper{'s' * (closed > 1)}." if closed else "."
+                self.tray.notify("SwiftMyPC cleaned up", msg)
+        self.run_bg(work, done)
+
     def on_sample(self, stats, apps):
         """Called every refresh by the Monitor tab, even while the window is hidden."""
+        self._last_cpu = stats["cpu"]
         if not self.tray:
             return
         self.tray.set_tooltip(f"SwiftMyPC · CPU {stats['cpu']:.0f}% · Memory {stats['mem_percent']:.0f}%")
@@ -245,8 +288,9 @@ class App(tk.Tk):
         ttk.Label(h, text="SwiftMyPC", style="Title.TLabel").pack(side="left")
         ttk.Label(h, text=f"  v{__version__}  ·  keep your PC quick", style="Muted.TLabel").pack(
             side="left", pady=(8, 0))
-        ttk.Button(h, text="Run health check", style="Accent.TButton",
-                   command=self.health_check).pack(side="right")
+        ttk.Button(h, text="⚡ Smart Optimize", style="Accent.TButton",
+                   command=self.open_optimizer).pack(side="right")
+        ttk.Button(h, text="Health check", command=self.health_check).pack(side="right", padx=(8, 0))
         self._build_settings_menu(h).pack(side="right", padx=(8, 0))
         if self.admin:
             ttk.Label(h, text="Administrator  ", foreground=OK).pack(side="right")
@@ -281,6 +325,10 @@ class App(tk.Tk):
                              command=toggle_tray, state=state)
         menu.add_checkbutton(label="Start with Windows (in the tray)", variable=boot_var,
                              command=toggle_boot)
+        auto_var = tk.BooleanVar(value=self.settings["auto_optimize"])
+        menu.add_checkbutton(label="Smart Optimize automatically once a day (junk files + helpers)",
+                             variable=auto_var,
+                             command=lambda: self.settings.set("auto_optimize", auto_var.get()))
         menu.add_separator()
         menu.add_command(label="Quit SwiftMyPC", command=self.quit_app)
         btn["menu"] = menu
@@ -338,6 +386,181 @@ class App(tk.Tk):
 
         sizes = dict(self.cleaner_tab.sizes)
         self.run_bg(lambda: run_health_check(self.admin, sizes), show)
+
+
+class OptimizeDialog(tk.Toplevel):
+    GROUPS = (("files", "Free disk space"), ("apps", "Free memory"),
+              ("services", "Lighter background"), ("startup", "Faster startup"))
+
+    def __init__(self, app: App):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title("Smart Optimize")
+        self.geometry("780x800")
+        self.minsize(700, 600)
+        self.transient(app)
+        self.actions: list[optimizer.Action] = []
+        self.vars: dict[str, tk.BooleanVar] = {}
+        self.results: dict[str, tk.Label] = {}
+
+        ttk.Label(self, text="⚡ Smart Optimize", style="Title.TLabel").pack(anchor="w", padx=20, pady=(16, 2))
+        ttk.Label(self, text="Finds and applies only safe fixes. No personal files are deleted, no app you "
+                             "have open is closed, and every setting change can be undone.",
+                  style="Muted.TLabel", wraplength=720, justify="left").pack(anchor="w", padx=20)
+        self.status = ttk.Label(self, text="Scanning your PC…", font=(FONT, 12, "bold"))
+        self.status.pack(anchor="w", padx=20, pady=(12, 6))
+        bottom = ttk.Frame(self)
+        bottom.pack(side="bottom", fill="x", padx=20, pady=16)  # packed first so it's never cut off
+        self.body = tk.Frame(self, bg=BG)
+        self.body.pack(fill="both", expand=True, padx=20)
+
+        self.rescan = ttk.Button(bottom, text="Scan again", command=self.scan)
+        self.rescan.pack(side="left")
+        self.go = ttk.Button(bottom, text="Optimize now", style="Accent.TButton", command=self.optimize)
+        self.go.pack(side="right")
+        self.undo_btn = ttk.Button(bottom, text="Undo last changes", command=self.undo)
+        self.scan()
+
+    # --- scanning --------------------------------------------------------------
+
+    def scan(self):
+        for w in self.body.winfo_children():
+            w.destroy()
+        self.status.config(text="Scanning your PC…")
+        self.go.state(["disabled"])
+        self.rescan.state(["disabled"])
+        self.go.config(text="Optimize now", command=self.optimize)
+        self._update_undo()
+        admin = self.app.admin
+
+        def work():
+            return optimizer.plan(admin), ([] if admin else optimizer.admin_only_preview())
+
+        self.app.run_bg(work, self._show_plan)
+
+    def _show_plan(self, result, err):
+        if not self.winfo_exists():
+            return
+        self.rescan.state(["!disabled"])
+        if err:
+            self.status.config(text=f"Scan failed: {err}")
+            return
+        self.actions, admin_extra = result
+        self.vars, self.results = {}, {}
+        doable = [a for a in self.actions if a.group != "note"]
+        if not doable:
+            self.status.config(text="Your PC is already in good shape. Nothing to optimize right now.")
+        for group, title in self.GROUPS:
+            items = [a for a in self.actions if a.group == group or (group == "files" and a.group == "note")]
+            if not items:
+                continue
+            tk.Label(self.body, text=title.upper(), bg=BG, fg=MUTED, font=(FONT, 8, "bold")).pack(
+                anchor="w", pady=(8, 2))
+            for a in items:
+                self._row(a)
+        if admin_extra:
+            row = tk.Frame(self.body, bg=BG)
+            row.pack(fill="x", pady=(10, 0))
+            tk.Label(row, text="Run as administrator to also include: " + ", ".join(admin_extra) + ".",
+                     bg=BG, fg=MUTED, font=(FONT, 9)).pack(side="left")
+            ttk.Button(row, text="Restart as admin", command=self.app.restart_as_admin).pack(side="right")
+        self._update_total()
+        if doable:
+            self.go.state(["!disabled"])
+
+    def _row(self, a: optimizer.Action):
+        row = tk.Frame(self.body, bg=PANEL, padx=12, pady=8)
+        row.pack(fill="x", pady=2)
+        left = tk.Frame(row, bg=PANEL)
+        left.pack(side="left", fill="x", expand=True)
+        if a.group == "note":
+            tk.Label(left, text="ℹ  " + a.label, bg=PANEL, fg=MUTED, font=(FONT, 10, "bold")).pack(anchor="w")
+        else:
+            var = tk.BooleanVar(value=True)
+            self.vars[a.key] = var
+            ttk.Checkbutton(left, text=a.label, variable=var, style="Card.TCheckbutton",
+                            command=self._update_total).pack(anchor="w")
+        tk.Label(left, text=a.detail, bg=PANEL, fg=MUTED, font=(FONT, 9), wraplength=520,
+                 justify="left").pack(anchor="w", padx=(22 if a.group != "note" else 0, 0))
+        right = tk.Frame(row, bg=PANEL)
+        right.pack(side="right")
+        if a.size:
+            unit = " RAM" if a.group == "apps" else ""
+            tk.Label(right, text=fmt_bytes(a.size) + unit, bg=PANEL, fg=TEXT,
+                     font=(FONT, 10, "bold")).pack(anchor="e")
+        self.results[a.key] = tk.Label(right, text="", bg=PANEL, fg=OK, font=(FONT, 9))
+        self.results[a.key].pack(anchor="e")
+
+    def _chosen(self):
+        return [a for a in self.actions if a.key in self.vars and self.vars[a.key].get()]
+
+    def _update_total(self):
+        chosen = self._chosen()
+        if not chosen:
+            if self.actions:
+                self.status.config(text="Nothing selected.")
+            return
+        disk = sum(a.size for a in chosen if a.group == "files")
+        mem = sum(a.size for a in chosen if a.group in ("apps", "services"))
+        parts = []
+        if disk:
+            parts.append(f"{fmt_bytes(disk)} of disk space")
+        if mem:
+            parts.append(f"{fmt_bytes(mem)} of memory")
+        fixes = len(chosen)
+        self.status.config(text=f"{fixes} safe fix{'es' * (fixes > 1)} found"
+                                + (" · frees about " + " and ".join(parts) if parts else ""))
+
+    # --- running ---------------------------------------------------------------
+
+    def optimize(self):
+        chosen = self._chosen()
+        if not chosen:
+            return
+        self.go.state(["disabled"])
+        self.rescan.state(["disabled"])
+        for key in self.vars:
+            self.results[key].config(text="")
+        self.status.config(text="Optimizing…")
+        self.app.run_bg(lambda: optimizer.run(chosen), lambda freed, err: self._done(chosen, freed, err))
+
+    def _done(self, chosen, freed, err):
+        if not self.winfo_exists():
+            return
+        self.rescan.state(["!disabled"])
+        if err:
+            self.status.config(text=f"Something went wrong: {err}")
+            self.go.state(["!disabled"])
+            return
+        for a in chosen:
+            ok = not a.result.startswith("failed")
+            self.results[a.key].config(text=("✓ " if ok else "✗ ") + a.result, fg=OK if ok else DANGER)
+        closed = sum(a.count for a in chosen if a.group == "apps")
+        msg = f"Done! Freed {fmt_bytes(freed)} of disk space"
+        msg += f" and closed {closed} background helper{'s' * (closed > 1)}." if closed else "."
+        self.status.config(text=msg)
+        self.go.config(text="Close", command=self.destroy)
+        self.go.state(["!disabled"])
+        self._update_undo()
+        self.app.cleaner_tab.scan()
+        self.app.startup_tab.load()
+        self.app.services_tab.load()
+
+    def _update_undo(self):
+        if optimizer.can_undo():
+            self.undo_btn.pack(side="right", padx=8)
+        else:
+            self.undo_btn.pack_forget()
+
+    def undo(self):
+        def done(msg, err):
+            if not self.winfo_exists():
+                return
+            messagebox.showinfo("Smart Optimize", str(err) if err else msg, parent=self)
+            self.app.startup_tab.load()
+            self.app.services_tab.load()
+            self.scan()
+        self.app.run_bg(optimizer.undo, done)
 
 
 def run_health_check(admin: bool, junk_sizes: dict | None = None) -> list[tuple[str, str]]:
