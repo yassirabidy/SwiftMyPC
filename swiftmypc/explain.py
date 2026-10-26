@@ -1,0 +1,96 @@
+"""Plain-English descriptions of common Windows processes."""
+
+DESCRIPTIONS = {
+    # Windows core
+    "system": "Windows kernel. Essential.",
+    "system idle process": "Not a real program: shows how much CPU is free.",
+    "registry": "Windows registry. Essential.",
+    "memory compression": "Windows compresses RAM here to fit more in memory. Essential.",
+    "secure system": "Windows security isolation. Essential.",
+    "smss.exe": "Session manager. Essential.",
+    "csrss.exe": "Client/server runtime. Essential.",
+    "wininit.exe": "Windows start-up. Essential.",
+    "winlogon.exe": "Handles sign-in. Essential.",
+    "services.exe": "Starts and stops Windows services. Essential.",
+    "lsass.exe": "Security and passwords. Essential.",
+    "svchost.exe": "Hosts Windows services. Usually essential; look at the Services tab in Task Manager if one is heavy.",
+    "dwm.exe": "Draws your windows and effects. Essential.",
+    "explorer.exe": "Taskbar, Start menu and File Explorer. Closing it hides the taskbar.",
+    "fontdrvhost.exe": "Font driver. Essential.",
+    "sihost.exe": "Shell infrastructure. Essential.",
+    "ctfmon.exe": "Keyboard and language input.",
+    "runtimebroker.exe": "Checks permissions for Store apps.",
+    "searchhost.exe": "Windows search box.",
+    "searchindexer.exe": "Indexes files for search. Heavy right after big file changes.",
+    "startmenuexperiencehost.exe": "Start menu.",
+    "shellexperiencehost.exe": "Notification and taskbar pop-ups.",
+    "textinputhost.exe": "Touch keyboard and emoji panel.",
+    "spoolsv.exe": "Printing service.",
+    "audiodg.exe": "Windows audio engine.",
+    "msmpeng.exe": "Microsoft Defender antivirus. Spikes during scans; keep it.",
+    "mpdefendercoreservice.exe": "Microsoft Defender. Keep it.",
+    "nissrv.exe": "Defender network protection.",
+    "securityhealthservice.exe": "Windows Security center.",
+    "tiworker.exe": "Windows Update installing updates. Heavy for a while, then stops.",
+    "trustedinstaller.exe": "Windows Update / component installer.",
+    "wmiprvse.exe": "System information provider used by other apps.",
+    "conhost.exe": "Console window host for command-line programs.",
+    "dllhost.exe": "Generic COM host (thumbnails, etc.).",
+    "taskhostw.exe": "Runs scheduled background tasks.",
+    "widgets.exe": "Windows Widgets panel. Safe to turn off in taskbar settings.",
+    "phoneexperiencehost.exe": "Phone Link. Safe to close if you don't use it.",
+    "gamebar.exe": "Xbox Game Bar. Safe to close.",
+    "lockapp.exe": "Lock screen.",
+    "applicationframehost.exe": "Hosts Store app windows.",
+    # Common apps
+    "chrome.exe": "Google Chrome. Each tab/extension is its own process; close tabs to free RAM.",
+    "msedge.exe": "Microsoft Edge. Each tab/extension is its own process.",
+    "msedgewebview2.exe": "Web view used inside other apps (Teams, Widgets, Office...).",
+    "firefox.exe": "Mozilla Firefox.",
+    "brave.exe": "Brave browser.",
+    "opera.exe": "Opera browser.",
+    "code.exe": "Visual Studio Code.",
+    "teams.exe": "Microsoft Teams.",
+    "ms-teams.exe": "Microsoft Teams.",
+    "discord.exe": "Discord.",
+    "slack.exe": "Slack.",
+    "spotify.exe": "Spotify.",
+    "steam.exe": "Steam client. Can be closed when not gaming.",
+    "steamwebhelper.exe": "Steam's built-in browser.",
+    "onedrive.exe": "OneDrive sync. Heavy while syncing.",
+    "dropbox.exe": "Dropbox sync.",
+    "googledrivefs.exe": "Google Drive sync.",
+    "winword.exe": "Microsoft Word.",
+    "excel.exe": "Microsoft Excel.",
+    "powerpnt.exe": "Microsoft PowerPoint.",
+    "outlook.exe": "Microsoft Outlook.",
+    "olk.exe": "New Microsoft Outlook.",
+    "zoom.exe": "Zoom.",
+    "whatsapp.exe": "WhatsApp.",
+    "telegram.exe": "Telegram.",
+    "python.exe": "A Python program (this app runs on Python too).",
+    "pythonw.exe": "A Python program without a console window (could be SwiftMyPC itself).",
+    "node.exe": "A Node.js program, often a dev server or tool.",
+    "java.exe": "A Java program.",
+    "javaw.exe": "A Java program.",
+    "docker desktop.exe": "Docker Desktop. Uses lots of RAM; quit it when not developing.",
+    "vmmem": "Virtual machine / WSL / Docker memory. Shut down WSL with 'wsl --shutdown'.",
+    "vmmemwsl": "WSL memory. Shut down with 'wsl --shutdown'.",
+    "claude.exe": "Claude desktop app.",
+}
+
+# Killing these crashes or locks up Windows.
+PROTECTED = {
+    "system", "system idle process", "registry", "memory compression", "secure system",
+    "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe",
+    "svchost.exe", "dwm.exe", "fontdrvhost.exe", "lsaiso.exe", "sihost.exe",
+    "msmpeng.exe", "mpdefendercoreservice.exe",
+}
+
+
+def describe(name: str) -> str:
+    return DESCRIPTIONS.get(name.lower(), "")
+
+
+def is_protected(name: str) -> bool:
+    return name.lower() in PROTECTED
