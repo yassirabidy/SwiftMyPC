@@ -2,7 +2,9 @@
 
 A small, honest Windows performance helper. It shows you **what** is slowing your PC down and lets you fix it, instead of running a fake "RAM booster".
 
-![Monitor](docs/monitor.png)
+![Overview](docs/monitor.png)
+
+A calm, Windows 11-style interface with light and dark themes (follows Windows, or pick one in Settings): soft layered surfaces, a violet-to-blue brand gradient, per-item accent colors and short, gentle motion that respects "reduce motion".
 
 ## Features
 
@@ -14,7 +16,7 @@ A small, honest Windows performance helper. It shows you **what** is slowing you
   - stops browser pre-launchers and updaters from starting with Windows
 
   Service and startup changes are logged, and **Undo last changes** puts them back. With **Smart Optimize automatically once a day** (on by default, under Settings), SwiftMyPC cleans junk files and background helpers by itself when your PC isn't busy, and tells you what it freed. Browser caches are left out of the daily run, because wiping them every day would make browsing slower.
-- **Monitor**: live CPU, memory and disk usage, a **10-minute CPU/memory history graph**, and every running app grouped by name with a plain-English "what is it?" column. Select an app and click **End task** to free its CPU and memory, or click **🧹 End unnecessary tasks** to close every known background helper (updaters, Phone Link, Widgets, Game Bar…) that has no open window, plus running updater services when you're admin. They restart by themselves when needed. Core Windows processes are protected so you can't crash your PC by accident.
+- **Overview and Processes**: live CPU, memory and disk usage, a **10-minute CPU/memory history graph**, and every running app grouped by name with a plain-English "what is it?" column. Click the stop button on an app to end it, or click **🧹 End unnecessary tasks** to close every known background helper (updaters, Phone Link, Widgets, Game Bar…) that has no open window, plus running updater services when you're admin. They restart by themselves when needed. Core Windows processes are protected so you can't crash your PC by accident.
 - **Startup apps**: everything that launches when you sign in (registry and Startup folders). Disabling works exactly like Task Manager's: it's safe and fully reversible.
 - **Services**: audits background services and highlights the ones that start with Windows but don't need to (updaters, telemetry, Xbox services, leftover VPNs...). Set them to Manual or Disabled in one click. Core Windows services are locked, and the original setting is saved so **Restore original** always works. Needs admin.
 - **Cleaner**: frees disk space from temp files, browser caches (Chrome, Edge, Brave, Firefox), crash dumps, old Windows Update downloads and the Recycle Bin. You see sizes before anything is deleted. Files in use are skipped, recent temp files are kept, and links are never followed.
@@ -44,7 +46,7 @@ Prefer not to install? Choose **Just run it once**, or start it with `--portable
 
 ## Run from source
 
-Requires Windows 10/11 and [Python 3.10+](https://www.python.org/downloads/).
+Requires Windows 10/11, [Python 3.10+](https://www.python.org/downloads/) and the Microsoft Edge WebView2 runtime (built into Windows 11 and current Windows 10).
 
 ```bat
 git clone https://github.com/yassirabidy/SwiftMyPC.git
@@ -69,8 +71,12 @@ Some actions (Windows temp files, Windows Update cache, startup apps installed f
 launcher.py    entry point for the .exe
 build.bat      builds dist\SwiftMyPC.exe with PyInstaller
 swiftmypc/
-  app.py       UI (tkinter), single-instance handling
-  charts.py    CPU/memory history graph
+  app.py       entry point: install / uninstall flows, then the window
+  webapp.py    the window (pywebview + Edge WebView2) and the API the page calls
+  core.py      background work: sampling, alerts, tray, daily optimize, updates
+  ui/          the interface: index.html, styles.css (design tokens), app.js, icons.js, install.html
+  instance.py  single-instance lock and show/quit signals
+  health.py    health check
   optimizer.py Smart Optimize: safe-fix rules, run, undo
   installer.py per-user install, shortcuts, Apps entry, uninstall
   updater.py   GitHub release check, verified download, self-swap

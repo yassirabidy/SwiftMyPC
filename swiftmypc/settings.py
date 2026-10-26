@@ -13,6 +13,7 @@ DEFAULTS = {
     "last_auto_optimize": 0,
     "auto_update": True,      # install new versions by itself while running in the tray
     "notified_version": "",   # last update version we already told the user about
+    "theme": "system",        # "system", "light" or "dark"
 }
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
